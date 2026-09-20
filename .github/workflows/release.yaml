@@ -1,0 +1,153 @@
+name: release
+
+permissions:
+  contents: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump (none = ship the version already in the repo)"
+        required: true
+        type: choice
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
+          - none
+      move_latest:
+        description: "Move the floating git tag 'latest' to this release"
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Resolve version
+        id: version
+        run: |
+          set -euo pipefail
+
+          if [[ ! -f VERSION ]]; then
+            echo "VERSION file is missing" >&2
+            exit 1
+          fi
+
+          VERSION=$(tr -d ' \t\r\n' < VERSION)
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "VERSION must be MAJOR.MINOR.PATCH, got: $VERSION" >&2
+            exit 1
+          fi
+
+          IFS='.' read -r major minor patch <<< "$VERSION"
+
+          case "${{ github.event.inputs.bump }}" in
+            patch)
+              patch=$((patch + 1))
+              ;;
+            minor)
+              minor=$((minor + 1))
+              patch=0
+              ;;
+            major)
+              major=$((major + 1))
+              minor=0
+              patch=0
+              ;;
+            none)
+              ;;
+            *)
+              echo "Unknown bump: ${{ github.event.inputs.bump }}" >&2
+              exit 1
+              ;;
+          esac
+
+          NEW_VERSION="$major.$minor.$patch"
+          echo "$NEW_VERSION" > VERSION
+          echo "NEW_VERSION=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $NEW_VERSION (bump=${{ github.event.inputs.bump }})"
+
+      - name: Write version into project files
+        run: |
+          set -euo pipefail
+          VER="${{ steps.version.outputs.NEW_VERSION }}"
+
+          # WhatAmi.ps1 header + runtime constant only. README is not touched.
+          sed -i -E "s/^# Version: .*/# Version: ${VER}/" WhatAmi.ps1
+          sed -i -E "s/\\\$WhatAmiVersion = '[^']*'/\$WhatAmiVersion = '${VER}'/" WhatAmi.ps1
+
+          echo "---- version strings ----"
+          grep -n -E "Version: |WhatAmiVersion = " WhatAmi.ps1
+          cat VERSION
+
+      - name: Pack release files
+        run: |
+          set -euo pipefail
+          VER="${{ steps.version.outputs.NEW_VERSION }}"
+          STAGE="Win_WhatAmI-${VER}"
+          mkdir -p "$STAGE"
+          # Project files only — no LICENSE, LICENSE-COMMERCIAL, or README.md
+          cp WhatAmi.ps1 Install-WhatAmi.ps1 VERSION "$STAGE/"
+          zip -r "${STAGE}.zip" "$STAGE"
+          echo "Packed:"
+          unzip -l "${STAGE}.zip"
+
+      - name: Commit version bump, version tag, & latest tag
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VER="${{ steps.version.outputs.NEW_VERSION }}"
+
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          git add VERSION WhatAmi.ps1
+
+          if git diff --cached --quiet; then
+            echo "No version-file changes to commit"
+          else
+            git commit -m "release v${VER}"
+          fi
+
+          git tag -f "v${VER}"
+
+          if [[ "${{ github.event.inputs.move_latest }}" == "true" ]]; then
+            git tag -f latest
+          fi
+
+          # Push commit + version tag
+          git push \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git" \
+            "HEAD:${{ github.ref_name }}" \
+            "v${VER}"
+
+          # Force-move floating latest tag (delete remote first if it exists)
+          if [[ "${{ github.event.inputs.move_latest }}" == "true" ]]; then
+            git push \
+              "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git" \
+              :refs/tags/latest || true
+            git push \
+              "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git" \
+              refs/tags/latest
+          fi
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.NEW_VERSION }}
+          name: v${{ steps.version.outputs.NEW_VERSION }}
+          generate_release_notes: true
+          files: |
+            WhatAmi.ps1
+            Install-WhatAmi.ps1
+            Win_WhatAmI-${{ steps.version.outputs.NEW_VERSION }}.zip
