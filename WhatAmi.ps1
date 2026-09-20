@@ -1,7 +1,9 @@
 # whatami for Windows PowerShell
+# Version: 0.1.7
 # Dot-source:  . .\WhatAmi.ps1
 # Then:        whatami
 #              whatami -d
+#              whatami -Version
 #              whatami -Plain
 #              whatami -Json
 
@@ -10,10 +12,18 @@ function whatami {
     param(
         [Alias('d')]
         [switch]$Details,
+        [switch]$Version,
         [switch]$Plain,
         [switch]$Json,
         [switch]$NoColor
     )
+
+    $WhatAmiVersion = '0.1.7'
+
+    if ($Version -and -not $Json -and -not $Details) {
+        Write-Output "whatami $WhatAmiVersion"
+        return
+    }
 
     function Get-WhatAmiContext {
         $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -338,6 +348,7 @@ function whatami {
             Is64Bit        = [Environment]::Is64BitProcess
             PSEdition      = [string]$PSVersionTable.PSEdition
             PSVersion      = $PSVersionTable.PSVersion.ToString()
+            Version        = $WhatAmiVersion
         }
     }
 
@@ -436,6 +447,7 @@ function whatami {
             @{ K = 'Risk';        V = $ctx.RiskLevel }
             @{ K = 'Warnings';    V = $(if ($ctx.Warnings -and $ctx.Warnings.Count) { $ctx.Warnings -join ', ' } else { $null }) }
             @{ K = 'PowerShell';  V = "$($ctx.PSEdition) $($ctx.PSVersion) $(if ($ctx.Is64Bit) { 'x64' } else { 'x86' })" }
+            @{ K = 'whatami';     V = $ctx.Version }
         )
         foreach ($r in $rows) {
             if ($null -eq $r.V -or $r.V -eq '') { continue }
